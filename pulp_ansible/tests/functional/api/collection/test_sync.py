@@ -4,8 +4,8 @@ import unittest
 from random import randint
 from urllib.parse import urlsplit
 
-from pulp_smash import api, config
-from pulp_smash.pulp3.constants import REPO_PATH
+from pulp_smash import api, config, cli
+from pulp_smash.pulp3.constants import MEDIA_PATH, REPO_PATH
 from pulp_smash.pulp3.utils import (
     gen_repo,
     get_added_content_summary,
@@ -118,11 +118,13 @@ class SyncTestCase(unittest.TestCase):
         self.addCleanup(self.client.delete, repo["_href"])
 
         # Step 2
-        role_remote = self.client.post(ANSIBLE_REMOTE_PATH, gen_ansible_remote())
+        role_remote = self.client.post(
+            ANSIBLE_REMOTE_PATH, gen_ansible_remote())
         self.addCleanup(self.client.delete, role_remote["_href"])
 
         collection_remote = self.client.post(
-            ANSIBLE_COLLECTION_REMOTE_PATH, gen_ansible_remote(url=ANSIBLE_COLLECTION_FIXTURE_URL)
+            ANSIBLE_COLLECTION_REMOTE_PATH, gen_ansible_remote(
+                url=ANSIBLE_COLLECTION_FIXTURE_URL)
         )
         self.addCleanup(self.client.delete, collection_remote["_href"])
 
@@ -130,7 +132,8 @@ class SyncTestCase(unittest.TestCase):
         sync(self.cfg, role_remote, repo)
         repo = self.client.get(repo["_href"])
         self.assertIsNotNone(repo["_latest_version_href"])
-        self.assertDictEqual(get_added_content_summary(repo), ANSIBLE_FIXTURE_CONTENT_SUMMARY)
+        self.assertDictEqual(get_added_content_summary(
+            repo), ANSIBLE_FIXTURE_CONTENT_SUMMARY)
 
         # Step 4
         sync(self.cfg, collection_remote, repo, mirror=True)
@@ -145,7 +148,8 @@ class SyncTestCase(unittest.TestCase):
         self.assertGreaterEqual(
             content_summary[ANSIBLE_COLLECTION_CONTENT_NAME], ANSIBLE_COLLECTION_FIXTURE_COUNT
         )
-        self.assertDictEqual(get_removed_content_summary(repo), ANSIBLE_FIXTURE_CONTENT_SUMMARY)
+        self.assertDictEqual(get_removed_content_summary(
+            repo), ANSIBLE_FIXTURE_CONTENT_SUMMARY)
 
     def test_mirror_sync_with_requirements(self):
         """
@@ -171,7 +175,8 @@ class SyncTestCase(unittest.TestCase):
         self.addCleanup(self.client.delete, repo["_href"])
 
         # Step 2
-        role_remote = self.client.post(ANSIBLE_REMOTE_PATH, gen_ansible_remote())
+        role_remote = self.client.post(
+            ANSIBLE_REMOTE_PATH, gen_ansible_remote())
         self.addCleanup(self.client.delete, role_remote["_href"])
 
         collection_remote = self.client.post(
@@ -187,7 +192,8 @@ class SyncTestCase(unittest.TestCase):
         sync(self.cfg, role_remote, repo)
         repo = self.client.get(repo["_href"])
         self.assertIsNotNone(repo["_latest_version_href"], repo)
-        self.assertDictEqual(get_added_content_summary(repo), ANSIBLE_FIXTURE_CONTENT_SUMMARY)
+        self.assertDictEqual(get_added_content_summary(
+            repo), ANSIBLE_FIXTURE_CONTENT_SUMMARY)
 
         # Step 4
         sync(self.cfg, collection_remote, repo, mirror=True)
@@ -202,7 +208,8 @@ class SyncTestCase(unittest.TestCase):
         self.assertGreaterEqual(
             content_summary[ANSIBLE_COLLECTION_CONTENT_NAME], ANSIBLE_COLLECTION_FIXTURE_COUNT
         )
-        self.assertDictEqual(get_removed_content_summary(repo), ANSIBLE_FIXTURE_CONTENT_SUMMARY)
+        self.assertDictEqual(get_removed_content_summary(
+            repo), ANSIBLE_FIXTURE_CONTENT_SUMMARY)
 
     def test_mirror_sync_with_invalid_requirements(self):
         """
@@ -218,7 +225,40 @@ class SyncTestCase(unittest.TestCase):
         """
         collection_remote = self.client.using_handler(api.echo_handler).post(
             ANSIBLE_COLLECTION_REMOTE_PATH,
-            gen_ansible_remote(url=ANSIBLE_COLLECTION_FIXTURE_URL, requirements_file="INVALID"),
+            gen_ansible_remote(
+                url=ANSIBLE_COLLECTION_FIXTURE_URL, requirements_file="INVALID"),
         )
 
         self.assertEqual(collection_remote.status_code, 400, collection_remote)
+
+    def test_file_decriptors(self):
+        """Test whether file descriptors are closed properly.
+
+        This test targets the following issue:
+        `Pulp #4073 <https://pulp.plan.io/issues/4073>`_
+
+        Do the following:
+        1. Check if 'lsof' is installed. If it is not, skip this test.
+        2. Create and sync a repo.
+        3. Run the 'lsof' command to verify that files in the
+           path ``/var/lib/pulp/`` are closed after the sync.
+        4. Assert that issued command returns `0` opened files.
+        """
+        cli_client = cli.Client(self.cfg, cli.echo_handler)
+
+        # check if 'lsof' is available
+        if cli_client.run(("which", "lsof")).returncode != 0:
+            raise unittest.SkipTest("lsof package is not present")
+
+        repo = self.client.post(REPO_PATH, gen_repo())
+        self.addCleanup(self.client.delete, repo["_href"])
+
+        body = gen_ansible_remote(url=ANSIBLE_COLLECTION_TESTING_URL)
+        remote = self.client.post(ANSIBLE_COLLECTION_REMOTE_PATH, body)
+        self.addCleanup(self.client.delete, remote["_href"])
+
+        sync(self.cfg, remote, repo)
+
+        cmd = "lsof -t +D {}".format(MEDIA_PATH).split()
+        response = cli_client.run(cmd).stdout
+        self.assertEqual(len(response), 0, response)
